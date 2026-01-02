@@ -8,7 +8,7 @@ generator client {
 }
 
 model User {
-  id          Int      @id @default(autoincrement())
+  id          String   @id @default(uuid()) @db.Uuid
   email       String   @unique
   password    String
   companyName String?
@@ -17,31 +17,33 @@ model User {
 }
 
 model Booth {
-  id        Int      @id @default(autoincrement())
-  name      String
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String?
   event     String
-  location  String
-  userId    Int
+  location  String?
+  userId    String   @db.Uuid
   user      User     @relation(fields: [userId], references: [id])
   leads     Lead[]
   createdAt DateTime @default(now())
+  
+  @@unique([userId]) // ✅ One booth per user constraint
 }
 
 model Lead {
-  id      Int   @id @default(autoincrement())
-  boothId Int
-  booth   Booth @relation(fields: [boothId], references: [id], onDelete: Cascade)
+  id      String @id @default(uuid()) @db.Uuid
+  boothId String @db.Uuid
+  booth   Booth  @relation(fields: [boothId], references: [id], onDelete: Cascade)
 
-  name     String
+  name     String?
   email    String?
   company  String?
   phone    String?
   interest String?
 
-  imageUrl   String? // 🖼️ business card / image upload
-  transcript String? // 📝 full audio transcription
+  imageUrl   String?
+  transcript String?
 
-  status    String
-  source    String
+  status    String   @default("new")
+  source    String   @default("manual")
   createdAt DateTime @default(now())
 }

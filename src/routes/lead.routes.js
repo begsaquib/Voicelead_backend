@@ -69,31 +69,41 @@ router.post("/capture", async (req, res) => {
       interest,
       transcript,
       imageUrl,
-      source ,
+      source,
     } = req.body;
 
-    // 🔹 TEMP: default boothId for testing
-    const resolvedBoothId = boothId ? Number(boothId) : 1;
+    console.log("📥 /capture - boothId received:", boothId); // ✅ ADD THIS
+    console.log("📥 /capture - boothId type:", typeof boothId); // ✅ ADD THIS
 
-    if (!name || !email) {
+    // ✅ ADD THIS VALIDATION
+    if (!boothId) {
       return res.status(400).json({
         success: false,
-        error: "name and email are required",
+        error: "boothId is required",
+      });
+    }
+
+    // ✅ Require at least email OR phone
+    if (!email && !phone) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Please provide at least an email or phone number to save this lead",
       });
     }
 
     const lead = await prisma.lead.create({
       data: {
-        boothId: resolvedBoothId,
-        name,
-        email,
+        boothId: boothId,
+        name: name || null,
+        email: email || null,
         company: company || null,
         phone: phone || null,
         interest: interest || null,
         transcript: transcript || null,
         imageUrl: imageUrl || null,
         status: "new",
-        source,
+        source: source || "manual",
       },
     });
 
@@ -105,10 +115,12 @@ router.post("/capture", async (req, res) => {
     console.error("Create lead error:", error);
     return res.status(500).json({
       success: false,
-      error: "Failed to save lead",
+      error: "Failed to save lead. Please try again.",
     });
   }
 });
+
+
 
 
 
