@@ -1,6 +1,10 @@
 node_modules
 .env
 
+# Logs
+logs/
+*.log
+
 # Test fixtures (audio and image files)
 src/tests/fixtures/*.mp3
 src/tests/fixtures/*.wav

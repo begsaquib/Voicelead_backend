@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const { PutObjectCommand } = require('@aws-sdk/client-s3');
 const s3Client = require('../config/s3.config');
+const logger = require('../config/logger');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -32,6 +33,14 @@ async function uploadAudioToS3(buffer, filename, mimetype, isTemporary = false) 
   const folder = isTemporary ? 'voice-recordings/temp' : 'voice-recordings';
   const key = `${folder}/${Date.now()}_${sanitizeFilename(filename)}`;
 
+  logger.info('📤 Uploading audio to S3', {
+    filename: sanitizeFilename(filename),
+    folder,
+    size: buffer.length,
+    mimetype,
+    isTemporary
+  });
+
   const command = new PutObjectCommand({
     Bucket: process.env.AWS_S3_BUCKET_NAME,
     Key: key,
@@ -44,11 +53,22 @@ async function uploadAudioToS3(buffer, filename, mimetype, isTemporary = false) 
     })
   });
 
-  await s3Client.send(command);
+  try {
+    await s3Client.send(command);
 
-  // Construct public URL
-  const url = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
-  return url;
+    // Construct public URL
+    const url = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+    
+    logger.info('✅ Audio uploaded successfully', { key, url: url.substring(0, 100) });
+    return url;
+  } catch (error) {
+    logger.error('❌ Failed to upload audio to S3', {
+      error: error.message,
+      filename: sanitizeFilename(filename),
+      folder
+    });
+    throw error;
+  }
 }
 
 /**
@@ -58,6 +78,14 @@ async function uploadAudioToS3(buffer, filename, mimetype, isTemporary = false) 
  * @param {Object} metadata - Transcription metadata (duration, segments, words, etc.)
  */
 function calculateConfidence(leadData, transcriptionText, metadata = {}) {
+  logger.debug('🔍 Calculating confidence score', {
+    textLength: transcriptionText.length,
+    hasMetadata: !!metadata.duration,
+    duration: metadata.duration,
+    segmentCount: metadata.segments?.length || 0,
+    wordCount: metadata.words?.length || 0
+  });
+
   let score = 0;
   let totalFields = 0;
 
@@ -112,6 +140,14 @@ function calculateConfidence(leadData, transcriptionText, metadata = {}) {
   // Normalize to 0-1 scale (adjusted for new scoring)
   const maxScore = totalFields + 1.5; // Adjusted for additional bonuses
   const confidence = Math.max(0, Math.min(1, score / maxScore));
+  
+  logger.info('📊 Confidence calculated', {
+    confidence: confidence.toFixed(3),
+    score,
+    maxScore,
+    fieldsPresent: Object.keys(leadData).filter(k => leadData[k]).length
+  });
+  
   return confidence;
 }
 
@@ -135,12 +171,20 @@ function calculateConfidence(leadData, transcriptionText, metadata = {}) {
  * @param {string} mimetype - File mimetype
  */
 async function processAudioToLead(audioBuffer, boothId, originalName, mimetype) {
+  logger.info('🎤 Starting audio processing', {
+    boothId,
+    originalName,
+    mimetype,
+    bufferSize: audioBuffer.length
+  });
+
   const tempFilePath = path.join(
     os.tmpdir(),
     `upload_${Date.now()}_${originalName}`
   );
 
   fs.writeFileSync(tempFilePath, audioBuffer);
+  logger.debug('📁 Temporary file created', { tempFilePath });
 
   try {
     // 1️⃣ Upload raw audio file to S3 (temporary storage - 7 days)
@@ -160,6 +204,7 @@ async function processAudioToLead(audioBuffer, boothId, originalName, mimetype) 
     );
 
     // 3️⃣ Transcribe with verbose_json for detailed metadata
+    logger.info('🎧 Starting Whisper transcription', { model: 'whisper-1' });
     const transcription = await openai.audio.transcriptions.create({
       file: fs.createReadStream(tempFilePath),
       model: "whisper-1",
@@ -177,7 +222,17 @@ async function processAudioToLead(audioBuffer, boothId, originalName, mimetype) 
       words: transcription.words || []
     };
 
+    logger.info('✅ Transcription completed', {
+      textLength: transcriptionText.length,
+      duration: transcriptionMetadata.duration,
+      language: transcriptionMetadata.language,
+      segmentCount: transcriptionMetadata.segments.length,
+      wordCount: transcriptionMetadata.words.length,
+      preview: transcriptionText.substring(0, 100)
+    });
+
     // 4️⃣ Extract structured data using JSON Schema with improved prompt
+    logger.info('🤖 Starting GPT-4o data extraction');
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -232,12 +287,24 @@ Use null only if absolutely no information is available for a field.`,
 
     const leadData = JSON.parse(completion.choices[0].message.content);
 
+    logger.info('✅ Data extraction completed', {
+      name: leadData.name,
+      email: leadData.email,
+      company: leadData.company,
+      hasPhone: !!leadData.phone
+    });
+
     // 5️⃣ Calculate AI confidence score using transcription metadata
     const confidence = calculateConfidence(leadData, transcriptionText, transcriptionMetadata);
 
     // 6️⃣ AI Fallback Logic: If confidence is below threshold
     let remarks = null;
     if (confidence < CONFIDENCE_THRESHOLD) {
+      logger.warn('⚠️ Low confidence detected - using AI fallback', {
+        confidence: confidence.toFixed(3),
+        threshold: CONFIDENCE_THRESHOLD
+      });
+      
       // Store partial/low-confidence data in remarks field
       const partialData = [];
       if (transcriptionText) partialData.push(`Transcript: ${transcriptionText}`);
@@ -250,7 +317,15 @@ Use null only if absolutely no information is available for a field.`,
       if (leadData.interest) partialData.push(`Interest (low confidence): ${leadData.interest}`);
       
       remarks = partialData.join(' | ');
+    } else {
+      logger.info('✅ High confidence - structured data extracted');
     }
+
+    logger.info('🎉 Audio processing completed successfully', {
+      confidence: confidence.toFixed(3),
+      usedFallback: confidence < CONFIDENCE_THRESHOLD,
+      hasRemarks: !!remarks
+    });
 
     return {
       name: leadData.name,
@@ -265,9 +340,18 @@ Use null only if absolutely no information is available for a field.`,
       remarks: remarks,
       rawAudioUrl: rawAudioUrl,
     };
+  } catch (error) {
+    logger.error('❌ Audio processing failed', {
+      error: error.message,
+      stack: error.stack,
+      originalName,
+      boothId
+    });
+    throw error;
   } finally {
     if (fs.existsSync(tempFilePath)) {
       fs.unlinkSync(tempFilePath);
+      logger.debug('🗑️ Temporary file cleaned up', { tempFilePath });
     }
   }
 }

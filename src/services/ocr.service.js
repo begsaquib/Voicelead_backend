@@ -1,6 +1,7 @@
 const OpenAI = require('openai');
 const { PutObjectCommand } = require('@aws-sdk/client-s3');
 const s3Client = require('../config/s3.config');
+const logger = require('../config/logger');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -23,6 +24,12 @@ function sanitizeFilename(filename) {
 async function uploadToS3(buffer, filename, mimetype) {
   const key = `business-cards/${Date.now()}_${sanitizeFilename(filename)}`;
 
+  logger.info('📸 Uploading business card image to S3', {
+    filename: sanitizeFilename(filename),
+    size: buffer.length,
+    mimetype
+  });
+
   const command = new PutObjectCommand({
     Bucket: process.env.AWS_S3_BUCKET_NAME,
     Key: key,
@@ -31,17 +38,31 @@ async function uploadToS3(buffer, filename, mimetype) {
     ACL: 'public-read',
   });
 
-  await s3Client.send(command);
+  try {
+    await s3Client.send(command);
 
-  // Construct public URL
-  const url = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
-  return url;
+    // Construct public URL
+    const url = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+    
+    logger.info('✅ Image uploaded successfully', { key, url: url.substring(0, 100) });
+    return url;
+  } catch (error) {
+    logger.error('❌ Failed to upload image to S3', {
+      error: error.message,
+      filename: sanitizeFilename(filename)
+    });
+    throw error;
+  }
 }
 
 /**
  * Extract lead data from image using OpenAI Vision with improved prompt
  */
 async function extractDataFromImage(imageBuffer) {
+  logger.info('🔍 Starting GPT-4o Vision OCR extraction', {
+    imageSize: imageBuffer.length
+  });
+
   const base64Image = imageBuffer.toString('base64');
 
   const completion = await openai.chat.completions.create({
@@ -85,13 +106,27 @@ If any field is not found, use null.`
     max_tokens: 1000
   });
 
-  return JSON.parse(completion.choices[0].message.content);
+  const result = JSON.parse(completion.choices[0].message.content);
+  
+  logger.info('✅ OCR extraction completed', {
+    name: result.name,
+    email: result.email,
+    company: result.company,
+    hasPhone: !!result.phone,
+    ocrTextLength: result.ocrText?.length || 0
+  });
+
+  return result;
 }
 
 /**
  * Calculate confidence score for OCR extraction
  */
 function calculateOCRConfidence(extractedData) {
+  logger.debug('📊 Calculating OCR confidence', {
+    ocrTextLength: extractedData.ocrText?.length || 0
+  });
+
   let score = 0;
   let totalFields = 0;
 
@@ -114,6 +149,13 @@ function calculateOCRConfidence(extractedData) {
   }
 
   const confidence = Math.max(0, Math.min(1, score / (totalFields + 0.5)));
+  
+  logger.info('📊 OCR confidence calculated', {
+    confidence: confidence.toFixed(3),
+    score,
+    fieldsPresent: Object.keys(extractedData).filter(k => extractedData[k]).length
+  });
+  
   return confidence;
 }
 
@@ -121,6 +163,12 @@ function calculateOCRConfidence(extractedData) {
  * Main function: Process image to lead data with AI fallback logic
  */
 async function processImageToLead(imageBuffer, boothId, originalName) {
+  logger.info('📷 Starting business card image processing', {
+    boothId,
+    originalName,
+    bufferSize: imageBuffer.length
+  });
+
   try {
     // 1. Upload to S3 first
     const imageUrl = await uploadToS3(
@@ -138,6 +186,11 @@ async function processImageToLead(imageBuffer, boothId, originalName) {
     // 4. AI Fallback Logic: If confidence is below threshold
     let remarks = null;
     if (confidence < CONFIDENCE_THRESHOLD) {
+      logger.warn('⚠️ Low OCR confidence - using AI fallback', {
+        confidence: confidence.toFixed(3),
+        threshold: CONFIDENCE_THRESHOLD
+      });
+      
       // Store partial/low-confidence data in remarks field
       const partialData = [];
       if (extractedData.ocrText) partialData.push(`OCR Text: ${extractedData.ocrText}`);
@@ -148,7 +201,15 @@ async function processImageToLead(imageBuffer, boothId, originalName) {
       if (extractedData.interest) partialData.push(`Interest (low confidence): ${extractedData.interest}`);
       
       remarks = partialData.join(' | ');
+    } else {
+      logger.info('✅ High OCR confidence - structured data extracted');
     }
+
+    logger.info('🎉 Image processing completed successfully', {
+      confidence: confidence.toFixed(3),
+      usedFallback: confidence < CONFIDENCE_THRESHOLD,
+      hasRemarks: !!remarks
+    });
 
     // 5. Return structured data
     return {
@@ -166,7 +227,12 @@ async function processImageToLead(imageBuffer, boothId, originalName) {
     };
 
   } catch (error) {
-    console.error('OCR processing error:', error);
+    logger.error('❌ OCR processing failed', {
+      error: error.message,
+      stack: error.stack,
+      originalName,
+      boothId
+    });
     throw new Error(`Failed to process business card: ${error.message}`);
   }
 }

@@ -61,6 +61,10 @@ AWS_ACCESS_KEY_ID="your-access-key"
 AWS_SECRET_ACCESS_KEY="your-secret-key"
 AWS_REGION="us-east-1"
 AWS_S3_BUCKET_NAME="your-bucket-name"
+
+# Logging (optional)
+LOG_LEVEL="info"  # Options: error, warn, info, debug
+NODE_ENV="development"  # or "production"
 ```
 
 ### 3. Database Setup
@@ -327,6 +331,11 @@ The system uses a sophisticated confidence scoring mechanism based on OpenAI Whi
 - **Above threshold**: Extract structured data to fields
 - **Below threshold**: Save full transcription to `remarks` field
 
+**Logged Events**:
+- 📊 Confidence calculation with metadata
+- ⚠️ Low confidence warnings
+- ✅ High confidence success messages
+
 ### Audio Storage Strategy
 
 **Permanent Storage** (`voice-recordings/`):
@@ -536,7 +545,8 @@ Voicelead_backend/
 ├── src/
 │   ├── index.js                    # Express app entry point
 │   ├── config/
-│   │   └── s3.config.js           # AWS S3 client configuration
+│   │   ├── s3.config.js           # AWS S3 client configuration
+│   │   └── logger.js              # Winston logger configuration
 │   ├── controllers/
 │   │   ├── auth.controller.js     # Signup/login handlers
 │   │   └── booth.controller.js    # Booth CRUD handlers
@@ -559,6 +569,11 @@ Voicelead_backend/
 ├── prisma/
 │   ├── schema.prisma              # Database schema
 │   └── migrations/                # Migration history
+├── logs/                          # Winston log files
+│   ├── combined.log               # All logs
+│   ├── error.log                  # Error logs only
+│   ├── exceptions.log             # Unhandled exceptions
+│   └── rejections.log             # Promise rejections
 ├── .env                           # Environment variables (gitignored)
 ├── .gitignore                     # Git exclusions
 ├── Dockerfile                     # Container configuration
@@ -570,6 +585,50 @@ Voicelead_backend/
 ```
 
 ## 🐛 Troubleshooting
+
+### Logging & Monitoring
+
+**Log Files Location**: `logs/` directory
+- `combined.log` - All logs (info, warn, error)
+- `error.log` - Error logs only
+- `exceptions.log` - Unhandled exceptions
+- `rejections.log` - Unhandled promise rejections
+
+**Log Levels**:
+- `error` - Critical errors requiring attention
+- `warn` - Warnings and low confidence captures
+- `info` - General information (requests, processing stages)
+- `debug` - Detailed debugging information
+
+**Environment Variable**:
+```env
+LOG_LEVEL=info  # Options: error, warn, info, debug
+```
+
+**Production Logging**: In production, logs are in JSON format for easy parsing. In development, logs are colorized and human-readable.
+
+**Viewing Logs**:
+```bash
+# View all logs
+cat logs/combined.log
+
+# View errors only
+cat logs/error.log
+
+# Watch logs in real-time (Windows PowerShell)
+Get-Content logs/combined.log -Wait -Tail 50
+
+# Filter for specific operations
+Select-String -Path logs/combined.log -Pattern "Audio processing"
+```
+
+**Key Log Events to Monitor**:
+- 🎤 Audio processing start/completion
+- 📷 Image OCR start/completion
+- ⚠️ Low confidence warnings (< 0.6)
+- ❌ Upload failures
+- 🔒 Authentication attempts
+- 📊 Confidence scores
 
 ### Database Issues
 
