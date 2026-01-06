@@ -9,6 +9,9 @@ const logger = require('../config/logger');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Require authentication for all lead routes
+router.use(authMiddleware);
+
 router.post("/process-audio", upload.single("audio"), async (req, res) => {
   const { boothId } = req.body;
 
@@ -47,6 +50,81 @@ router.post("/process-audio", upload.single("audio"), async (req, res) => {
       filename: req.file?.originalname
     });
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Update an existing lead (name, contact details, notes)
+router.patch('/:id', async (req, res) => {
+  const { id } = req.params;
+  const {
+    name,
+    email,
+    company,
+    phone,
+    interest,
+    remarks,
+    status,
+  } = req.body;
+
+  logger.info('✏️ Lead update requested', {
+    leadId: id,
+    userId: req.user?.id,
+    hasEmail: !!email,
+    hasPhone: !!phone,
+    hasName: !!name,
+    hasRemarks: !!remarks
+  });
+
+  try {
+    const existing = await prisma.lead.findUnique({
+      where: { id },
+      include: {
+        booth: { select: { userId: true } },
+      },
+    });
+
+    if (!existing) {
+      logger.warn('⚠️ Lead update failed - not found', { leadId: id });
+      return res.status(404).json({ success: false, error: 'Lead not found' });
+    }
+
+    if (existing.booth.userId !== req.user.id) {
+      logger.warn('🚫 Lead update forbidden - wrong owner', {
+        leadId: id,
+        requestedBy: req.user.id,
+      });
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+
+    const data = {
+      name: name ?? undefined,
+      email: email ?? undefined,
+      company: company ?? undefined,
+      phone: phone ?? undefined,
+      interest: interest ?? undefined,
+      remarks: remarks ?? undefined,
+      status: status ?? undefined,
+    };
+
+    const updated = await prisma.lead.update({
+      where: { id },
+      data,
+    });
+
+    logger.info('✅ Lead updated', { leadId: id, userId: req.user.id });
+
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    logger.error('❌ Lead update failed', {
+      error: error.message,
+      stack: error.stack,
+      leadId: id,
+      userId: req.user?.id,
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to update lead. Please try again.',
+    });
   }
 });
 
